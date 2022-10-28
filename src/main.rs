@@ -1,4 +1,4 @@
-use glide::{
+use zeppelin::{
     api::Api,
     formats::Json,
     service::Service,
