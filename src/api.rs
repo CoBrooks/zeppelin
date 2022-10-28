@@ -22,6 +22,7 @@ where
     I: FromRequest + Send + 'static,
     O: IntoResponse + Send + Sync + 'static,
 {
+    #[instrument(skip_all, level = "debug")]
     async fn handle_connection<H>(stream: TcpStream, handler: Arc<H>) -> Result<Vec<u8>, Error>
     where
         I: Debug,
@@ -34,17 +35,19 @@ where
         let amt = reader.read(&mut buf).await?;
 
         let input = I::from_request(&buf[..amt]).unwrap();
+        debug!(request = ?input);
 
         match handler.call(input).await {
             Ok(response) => {
+                debug!(?response);
                 let response = response.into_response();
                 writer.write_all(&response).await?;
 
                 Ok(response)
             }
-            Err(e) => {
-                let msg = format!("ERROR: {e}");
-                eprintln!("{msg}");
+            Err(err) => {
+                let msg = format!("ERROR: {err}");
+                error!("{err}");
 
                 let response = Response::builder()
                     .status(StatusCode::INTERNAL_SERVER_ERROR)
@@ -54,7 +57,7 @@ where
 
                 writer.write_all(&response).await?;
 
-                Err(e)
+                Err(err)
             }
         }
     }
@@ -77,6 +80,8 @@ where
     where
         H: Handler<Self::Input, Self::Output> + Send + Sync + 'static,
     {
+        crate::init_tracing();
+
         let input = TcpListener::bind(input).await?;
         let output = TcpListener::bind(output).await?;
 
@@ -88,6 +93,9 @@ where
 
         let mut sigterm = tokio::signal::unix::signal(SignalKind::terminate())?;
 
+        info!("API Service started on {}", input.local_addr()?);
+        info!("Outputting events on {}", output.local_addr()?);
+
         loop {
             let tx = tx.clone();
 
@@ -95,14 +103,15 @@ where
                 Ok((stream, _)) = input.accept() => {
                     let handler = handler.clone();
                     tokio::spawn(async move {
-                        let bytes = Self::handle_connection(stream, handler).await.unwrap();
-
-                        tx.send(bytes).await
+                        if let Ok(bytes) = Self::handle_connection(stream, handler).await {
+                            tx.send(bytes).await.unwrap();
+                        } 
                     });
                 }
 
-                Ok((stream, _)) = output.accept() => {
+                Ok((stream, addr)) = output.accept() => {
                     let (_reader, writer) = stream.into_split();
+                    info!(%addr, "Adding new subscriber");
                     subscribers.push(writer);
                 }
 
@@ -115,6 +124,7 @@ where
                 }
 
                 Some(_) = sigterm.recv() => {
+                    error!("Received SIGTERM");
                     break Err("Received SIGTERM".into());
                 }
             }

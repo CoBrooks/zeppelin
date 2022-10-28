@@ -1,4 +1,5 @@
 use std::convert::Infallible;
+use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
@@ -19,8 +20,8 @@ pub struct Standard<I, O> {
 #[async_trait]
 impl<I, O> Service for Standard<I, O>
 where
-    I: FromRequest + Send + 'static,
-    O: IntoResponse + Send + 'static,
+    I: FromRequest + Debug + Send + 'static,
+    O: IntoResponse + Debug + Send + 'static,
 {
     type Input = I;
     type Output = Result<O, Error>;
@@ -33,7 +34,11 @@ where
     where
         H: Handler<Self::Input, Self::Output> + 'static,
     {
+        crate::init_tracing();
+
         let mut input = TcpStream::connect(input).await?;
+        debug!("Receiving events on {}", input.local_addr()?);
+
         let output = TcpListener::bind(output).await?;
 
         let handler = Arc::new(handler);
@@ -54,21 +59,23 @@ where
 
                     tokio::spawn(async move {
                         let i = I::from_request(&buf[..amt]).unwrap();
+                        debug!(request = ?i);
 
                         match handler.call(i).await {
                             Ok(result) => {
+                                debug!(?result);
                                 tx.send(result.into_response()).await.unwrap();
                             },
-                            Err(e) => eprintln!("ERROR: {e}")
+                            Err(err) => error!("{err}")
                         };
 
                         Ok::<_, Infallible>(())
                     });
                 },
 
-                Ok((stream, _)) = output.accept() => {
+                Ok((stream, addr)) = output.accept() => {
                     let (_reader, writer) = stream.into_split();
-
+                    info!(%addr, "Adding new subscriber");
                     subscribers.push(writer);
                 },
 
@@ -81,6 +88,7 @@ where
                 }
                 
                 Some(_) = sigterm.recv() => {
+                    error!("Received SIGTERM");
                     break Err("Received SIGTERM".into());
                 }
             }

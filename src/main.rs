@@ -27,8 +27,14 @@ struct FooBar {
 }
 
 async fn api_handler(request: Request<Json<FooBar>>) -> Result<Response<Json<FooBar>>, Error> {
+    let Json(body) = request.body();
+
+    if body.foo == "err" {
+        return Err("This is an error".into());
+    }
+
     let body = FooBar {
-        foo: request.body().foo.to_uppercase(),
+        foo: body.foo.to_uppercase(),
     };
 
     let response = Response::builder()
