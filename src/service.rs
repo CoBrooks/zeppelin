@@ -60,7 +60,7 @@ where
     type Error = Error;
 
     fn from_request(request: &[u8]) -> Result<Self, Self::Error> {
-        let mut headers = [httparse::EMPTY_HEADER; 16];
+        let mut headers = [httparse::EMPTY_HEADER; 32];
         let mut parsed = httparse::Request::new(&mut headers);
 
         // TODO: handle incomplete request      v
